@@ -100,8 +100,10 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
+.python-version
+.env*
 .venv
+.venv*
 env/
 venv/
 ENV/
@@ -142,3 +144,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+.aider*
+
+# Redis database files
+dump.rdb
