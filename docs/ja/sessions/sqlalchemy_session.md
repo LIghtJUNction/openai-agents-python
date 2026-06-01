@@ -4,7 +4,7 @@ search:
 ---
 # SQLAlchemy セッション
 
-`SQLAlchemySession` は SQLAlchemy を使用して本番運用可能なセッション実装を提供し、SQLAlchemy がサポートする任意のデータベース（PostgreSQL、MySQL、SQLite など）をセッションストレージに使用できます。
+`SQLAlchemySession` は SQLAlchemy を使用して、本番環境に対応したセッション実装を提供します。これにより、セッションストレージとして SQLAlchemy がサポートする任意のデータベース (PostgreSQL、MySQL、SQLite など) を使用できます。
 
 ## インストール
 
@@ -18,7 +18,7 @@ pip install openai-agents[sqlalchemy]
 
 ### データベース URL の使用
 
-最も簡単な始め方:
+始めるための最も簡単な方法です:
 
 ```python
 import asyncio
@@ -42,9 +42,9 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-### 既存のエンジンの使用
+### 既存エンジンの使用
 
-既存の SQLAlchemy エンジンを使用するアプリケーション向け:
+既存の SQLAlchemy エンジンを持つアプリケーション向けです:
 
 ```python
 import asyncio
@@ -77,4 +77,4 @@ if __name__ == "__main__":
 ## API リファレンス
 
 - [`SQLAlchemySession`][agents.extensions.memory.sqlalchemy_session.SQLAlchemySession] - メインクラス
-- [`Session`][agents.memory.session.Session] - セッションのベースプロトコル
+- [`Session`][agents.memory.session.Session] - 基本セッションプロトコル

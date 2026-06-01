@@ -1,11 +1,12 @@
 import asyncio
 import random
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 from pydantic import BaseModel
 
 from agents import (
     Agent,
+    AgentHookContext,
     AgentHooks,
     RunContextWrapper,
     RunHooks,
@@ -16,15 +17,17 @@ from agents import (
 )
 from agents.items import ModelResponse, TResponseInputItem
 from agents.tool_context import ToolContext
+from examples.auto_mode import input_with_fallback
 
 
 class LoggingHooks(AgentHooks[Any]):
     async def on_start(
         self,
-        context: RunContextWrapper[Any],
+        context: AgentHookContext[Any],
         agent: Agent[Any],
     ) -> None:
-        print(f"#### {agent.name} is starting.")
+        # Access the turn_input from the context to see what input the agent received
+        print(f"#### {agent.name} is starting with turn_input: {context.turn_input}")
 
     async def on_end(
         self,
@@ -42,17 +45,18 @@ class ExampleHooks(RunHooks):
     def _usage_to_str(self, usage: Usage) -> str:
         return f"{usage.requests} requests, {usage.input_tokens} input tokens, {usage.output_tokens} output tokens, {usage.total_tokens} total tokens"
 
-    async def on_agent_start(self, context: RunContextWrapper, agent: Agent) -> None:
+    async def on_agent_start(self, context: AgentHookContext, agent: Agent) -> None:
         self.event_counter += 1
+        # Access the turn_input from the context to see what input the agent received
         print(
-            f"### {self.event_counter}: Agent {agent.name} started. Usage: {self._usage_to_str(context.usage)}"
+            f"### {self.event_counter}: Agent {agent.name} started. turn_input: {context.turn_input}. Usage: {self._usage_to_str(context.usage)}"
         )
 
     async def on_llm_start(
         self,
         context: RunContextWrapper,
         agent: Agent,
-        system_prompt: Optional[str],
+        system_prompt: str | None,
         input_items: list[TResponseInputItem],
     ) -> None:
         self.event_counter += 1
@@ -84,7 +88,7 @@ class ExampleHooks(RunHooks):
         )
 
     async def on_tool_end(
-        self, context: RunContextWrapper, agent: Agent, tool: Tool, result: str
+        self, context: RunContextWrapper, agent: Agent, tool: Tool, result: object
     ) -> None:
         self.event_counter += 1
         # While this type cast is not ideal,
@@ -143,7 +147,7 @@ start_agent = Agent(
 
 
 async def main() -> None:
-    user_input = input("Enter a max number: ")
+    user_input = input_with_fallback("Enter a max number: ", "50")
     try:
         max_number = int(user_input)
         await Runner.run(

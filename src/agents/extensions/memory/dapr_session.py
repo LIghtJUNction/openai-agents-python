@@ -29,17 +29,23 @@ import random
 import time
 from typing import Any, Final, Literal
 
+from ._optional_imports import raise_optional_dependency_error
+
 try:
     from dapr.aio.clients import DaprClient
     from dapr.clients.grpc._state import Concurrency, Consistency, StateOptions
 except ImportError as e:
-    raise ImportError(
-        "DaprSession requires the 'dapr' package. Install it with: pip install dapr"
-    ) from e
+    raise_optional_dependency_error(
+        "DaprSession",
+        dependency_name="dapr",
+        extra_name="dapr",
+        cause=e,
+    )
 
 from ...items import TResponseInputItem
 from ...logger import logger
 from ...memory.session import SessionABC
+from ...memory.session_settings import SessionSettings, resolve_session_limit
 
 # Type alias for consistency levels
 ConsistencyLevel = Literal["eventual", "strong"]
@@ -54,7 +60,9 @@ _RETRY_MAX_DELAY_SECONDS: Final[float] = 1.0
 
 
 class DaprSession(SessionABC):
-    """Dapr State Store implementation of :pyclass:`agents.memory.session.Session`."""
+    """Dapr State Store implementation of [`Session`][agents.memory.session.Session]."""
+
+    session_settings: SessionSettings | None = None
 
     def __init__(
         self,
@@ -64,6 +72,7 @@ class DaprSession(SessionABC):
         dapr_client: DaprClient,
         ttl: int | None = None,
         consistency: ConsistencyLevel = DAPR_CONSISTENCY_EVENTUAL,
+        session_settings: SessionSettings | None = None,
     ):
         """Initializes a new DaprSession.
 
@@ -77,8 +86,11 @@ class DaprSession(SessionABC):
             consistency (ConsistencyLevel, optional): Consistency level for state operations.
                 Use DAPR_CONSISTENCY_EVENTUAL or DAPR_CONSISTENCY_STRONG constants.
                 Defaults to DAPR_CONSISTENCY_EVENTUAL.
+            session_settings (SessionSettings | None): Session configuration settings including
+                default limit for retrieving items. If None, uses default SessionSettings().
         """
         self.session_id = session_id
+        self.session_settings = session_settings or SessionSettings()
         self._dapr_client = dapr_client
         self._state_store_name = state_store_name
         self._ttl = ttl
@@ -97,6 +109,7 @@ class DaprSession(SessionABC):
         *,
         state_store_name: str,
         dapr_address: str = "localhost:50001",
+        session_settings: SessionSettings | None = None,
         **kwargs: Any,
     ) -> DaprSession:
         """Create a session from a Dapr sidecar address.
@@ -105,6 +118,8 @@ class DaprSession(SessionABC):
             session_id (str): Conversation ID.
             state_store_name (str): Name of the Dapr state store component.
             dapr_address (str): Dapr sidecar gRPC address. Defaults to "localhost:50001".
+            session_settings (SessionSettings | None): Session configuration settings including
+                default limit for retrieving items. If None, uses default SessionSettings().
             **kwargs: Additional keyword arguments forwarded to the main constructor
                 (e.g., ttl, consistency).
 
@@ -119,7 +134,11 @@ class DaprSession(SessionABC):
         """
         dapr_client = DaprClient(address=dapr_address)
         session = cls(
-            session_id, state_store_name=state_store_name, dapr_client=dapr_client, **kwargs
+            session_id,
+            state_store_name=state_store_name,
+            dapr_client=dapr_client,
+            session_settings=session_settings,
+            **kwargs,
         )
         session._owns_client = True  # We created the client, so we own it
         return session
@@ -163,7 +182,7 @@ class DaprSession(SessionABC):
         """Deserialize a JSON string to an item. Can be overridden by subclasses."""
         return json.loads(item)  # type: ignore[no-any-return]
 
-    def _decode_messages(self, data: bytes | None) -> list[Any]:
+    def _decode_messages(self, data: bytes | None, *, strict: bool = False) -> list[Any]:
         if not data:
             return []
         try:
@@ -171,9 +190,22 @@ class DaprSession(SessionABC):
             messages = json.loads(messages_json)
             if isinstance(messages, list):
                 return list(messages)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            if strict:
+                raise ValueError(
+                    "The stored Dapr session messages are not valid JSON and cannot be "
+                    "safely updated."
+                ) from error
             return []
+        if strict:
+            raise ValueError(
+                "The stored Dapr session messages must be a JSON list and cannot be safely updated."
+            )
         return []
+
+    def _decode_messages_for_update(self, data: bytes | None) -> list[Any]:
+        """Decode aggregate state before an operation that rewrites it."""
+        return self._decode_messages(data, strict=True)
 
     def _calculate_retry_delay(self, attempt: int) -> float:
         base: float = _RETRY_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1))
@@ -222,12 +254,14 @@ class DaprSession(SessionABC):
         """Retrieve the conversation history for this session.
 
         Args:
-            limit: Maximum number of items to retrieve. If None, retrieves all items.
+            limit: Maximum number of items to retrieve. If None, uses session_settings.limit.
                    When specified, returns the latest N items in chronological order.
 
         Returns:
             List of input items representing the conversation history
         """
+        session_limit = resolve_session_limit(limit, self.session_settings)
+
         async with self._lock:
             # Get messages from state store with consistency level
             response = await self._dapr_client.get_state(
@@ -239,10 +273,10 @@ class DaprSession(SessionABC):
             messages = self._decode_messages(response.data)
             if not messages:
                 return []
-            if limit is not None:
-                if limit <= 0:
+            if session_limit is not None:
+                if session_limit <= 0:
                     return []
-                messages = messages[-limit:]
+                messages = messages[-session_limit:]
             items: list[TResponseInputItem] = []
             for msg in messages:
                 try:
@@ -274,7 +308,7 @@ class DaprSession(SessionABC):
                     key=self._messages_key,
                     state_metadata=self._get_read_metadata(),
                 )
-                existing_messages = self._decode_messages(response.data)
+                existing_messages = self._decode_messages_for_update(response.data)
                 updated_messages = existing_messages + serialized_items
                 messages_json = json.dumps(updated_messages, separators=(",", ":"))
                 etag = response.etag
@@ -315,42 +349,42 @@ class DaprSession(SessionABC):
             The most recent item if it exists, None if the session is empty
         """
         async with self._lock:
-            attempt = 0
             while True:
-                attempt += 1
-                response = await self._dapr_client.get_state(
-                    store_name=self._state_store_name,
-                    key=self._messages_key,
-                    state_metadata=self._get_read_metadata(),
-                )
-                messages = self._decode_messages(response.data)
-                if not messages:
-                    return None
-                last_item = messages.pop()
-                messages_json = json.dumps(messages, separators=(",", ":"))
-                etag = getattr(response, "etag", None) or None
-                etag = getattr(response, "etag", None) or None
-                try:
-                    await self._dapr_client.save_state(
+                attempt = 0
+                while True:
+                    attempt += 1
+                    response = await self._dapr_client.get_state(
                         store_name=self._state_store_name,
                         key=self._messages_key,
-                        value=messages_json,
-                        etag=etag,
-                        state_metadata=self._get_metadata(),
-                        options=self._get_state_options(concurrency=Concurrency.first_write),
+                        state_metadata=self._get_read_metadata(),
                     )
-                    break
-                except Exception as error:
-                    should_retry = await self._handle_concurrency_conflict(error, attempt)
-                    if should_retry:
-                        continue
-                    raise
-            try:
-                if isinstance(last_item, str):
-                    return await self._deserialize_item(last_item)
-                return last_item  # type: ignore[no-any-return]
-            except (json.JSONDecodeError, TypeError):
-                return None
+                    messages = self._decode_messages(response.data)
+                    if not messages:
+                        return None
+                    last_item = messages.pop()
+                    messages_json = json.dumps(messages, separators=(",", ":"))
+                    etag = getattr(response, "etag", None) or None
+                    try:
+                        await self._dapr_client.save_state(
+                            store_name=self._state_store_name,
+                            key=self._messages_key,
+                            value=messages_json,
+                            etag=etag,
+                            state_metadata=self._get_metadata(),
+                            options=self._get_state_options(concurrency=Concurrency.first_write),
+                        )
+                        break
+                    except Exception as error:
+                        should_retry = await self._handle_concurrency_conflict(error, attempt)
+                        if should_retry:
+                            continue
+                        raise
+                try:
+                    if isinstance(last_item, str):
+                        return await self._deserialize_item(last_item)
+                    return last_item  # type: ignore[no-any-return]
+                except (json.JSONDecodeError, TypeError):
+                    continue
 
     async def clear_session(self) -> None:
         """Clear all items for this session."""

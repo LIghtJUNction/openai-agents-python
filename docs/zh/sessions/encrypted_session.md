@@ -4,24 +4,24 @@ search:
 ---
 # 加密会话
 
-`EncryptedSession` 为任意会话实现提供透明加密，通过自动过期机制保护会话数据并清除旧条目。
+`EncryptedSession` 为任何会话实现提供透明加密，通过自动过期旧条目来保护对话数据。
 
 ## 功能
 
-- **透明加密**: 使用 Fernet 加密封装任意会话
-- **按会话独立密钥**: 使用 HKDF 密钥派生为每个会话生成唯一密钥
-- **自动过期**: 当 TTL 过期时自动跳过旧条目
-- **可直接替换**: 适配任意现有会话实现
+- **透明加密**：使用 Fernet 加密包装任何会话
+- **每会话密钥**：使用 HKDF 密钥派生，为每个会话生成唯一加密
+- **自动过期**：TTL 过期时会静默跳过旧条目
+- **即插即用替代方案**：适用于任何现有会话实现
 
 ## 安装
 
-加密会话需要安装 `encrypt` 可选依赖：
+加密会话需要 `encrypt` extra：
 
 ```bash
 pip install openai-agents[encrypt]
 ```
 
-## 快速开始
+## 快速入门
 
 ```python
 import asyncio
@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
 ### 加密密钥
 
-加密密钥可以是 Fernet 密钥或任意字符串：
+加密密钥可以是 Fernet 密钥，也可以是任意字符串：
 
 ```python
 from agents.extensions.memory import EncryptedSession
@@ -101,9 +101,9 @@ session = EncryptedSession(
 )
 ```
 
-## 不同会话类型的用法
+## 与不同会话类型的搭配使用
 
-### 配合 SQLite 会话
+### 与 SQLite 会话搭配使用
 
 ```python
 from agents import SQLiteSession
@@ -119,7 +119,7 @@ session = EncryptedSession(
 )
 ```
 
-### 配合 SQLAlchemy 会话
+### 与 SQLAlchemy 会话搭配使用
 
 ```python
 from agents.extensions.memory import EncryptedSession, SQLAlchemySession
@@ -140,30 +140,30 @@ session = EncryptedSession(
 
 !!! warning "高级会话功能"
 
-    当将 `EncryptedSession` 与诸如 `AdvancedSQLiteSession` 等高级会话实现配合使用时，请注意：
+    将 `EncryptedSession` 与 `AdvancedSQLiteSession` 等高级会话实现一起使用时，请注意：
 
-    - 由于消息内容被加密，`find_turns_by_content()` 等方法将无法有效工作
-    - 基于内容的搜索会作用于加密数据，因此效果受限
+    - 像 `find_turns_by_content()` 这样的方法无法有效工作，因为消息内容已加密
+    - 基于内容的搜索会在加密数据上运行，因此效果受限
 
 
 
 ## 密钥派生
 
-EncryptedSession 使用 HKDF（基于 HMAC 的密钥派生函数）为每个会话派生唯一加密密钥：
+EncryptedSession 使用 HKDF（基于 HMAC 的密钥派生函数）为每个会话派生唯一的加密密钥：
 
-- **主密钥**: 你提供的加密密钥
-- **会话盐值**: 会话 ID
-- **信息字符串**: "agents.session-store.hkdf.v1"
-- **输出**: 32 字节的 Fernet 密钥
+- **主密钥**：你提供的加密密钥
+- **会话盐值**：会话 ID
+- **信息字符串**：`"agents.session-store.hkdf.v1"`
+- **输出**：32 字节 Fernet 密钥
 
-这确保：
+这可以确保：
 - 每个会话都有唯一的加密密钥
-- 没有主密钥无法派生出密钥
-- 不同会话之间无法互相解密会话数据
+- 没有主密钥就无法派生密钥
+- 不同会话之间的会话数据无法相互解密
 
 ## 自动过期
 
-当条目超过 TTL 时，在检索时会被自动跳过：
+当条目超过 TTL 时，检索过程中会自动跳过它们：
 
 ```python
 # Items older than TTL are silently ignored

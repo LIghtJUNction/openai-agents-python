@@ -2,11 +2,11 @@
 search:
   exclude: true
 ---
-# 快速开始
+# 快速入门
 
-## 项目与虚拟环境
+## 项目与虚拟环境的创建
 
-你只需执行一次。
+你只需要执行一次。
 
 ```bash
 mkdir my_project
@@ -14,44 +14,144 @@ cd my_project
 python -m venv .venv
 ```
 
-### 虚拟环境激活
+### 虚拟环境的激活
 
-每次开启新的终端会话时执行。
+每次启动新的终端会话时都需要执行此操作。
+
+在 macOS 或 Linux 上：
 
 ```bash
 source .venv/bin/activate
 ```
 
-### 安装 Agents SDK
+在 Windows 上：
+
+```cmd
+.venv\Scripts\activate
+```
+
+### Agents SDK 的安装
 
 ```bash
 pip install openai-agents # or `uv add openai-agents`, etc
 ```
 
-### 设置 OpenAI API 密钥
+### OpenAI API 密钥的设置
 
-如果你还没有，请按照[这些说明](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)创建一个 OpenAI API 密钥。
+如果你还没有密钥，请按照[这些说明](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key)创建 OpenAI API 密钥。
+
+这些命令会为当前终端会话设置密钥。
+
+在 macOS 或 Linux 上：
 
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
 
-## 首个智能体创建
+在 Windows PowerShell 上：
 
-智能体由 instructions、名称以及可选配置（例如 `model_config`）定义。
+```powershell
+$env:OPENAI_API_KEY = "sk-..."
+```
+
+在 Windows 命令提示符上：
+
+```cmd
+set "OPENAI_API_KEY=sk-..."
+```
+
+## 首个智能体的创建
+
+智能体由 instructions、名称以及特定模型等可选配置定义。
 
 ```python
 from agents import Agent
 
 agent = Agent(
-    name="Math Tutor",
-    instructions="You provide help with math problems. Explain your reasoning at each step and include examples",
+    name="History Tutor",
+    instructions="You answer history questions clearly and concisely.",
 )
 ```
 
-## 更多智能体添加
+## 首个智能体的运行
 
-其他智能体可以用相同方式定义。`handoff_descriptions` 为确定任务转移路由提供额外上下文。
+使用 [`Runner`][agents.run.Runner] 执行智能体，并获取返回的 [`RunResult`][agents.result.RunResult]。
+
+```python
+import asyncio
+from agents import Agent, Runner
+
+agent = Agent(
+    name="History Tutor",
+    instructions="You answer history questions clearly and concisely.",
+)
+
+async def main():
+    result = await Runner.run(agent, "When did the Roman Empire fall?")
+    print(result.final_output)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+对于第二轮对话，你可以将 `result.to_input_list()` 传回 `Runner.run(...)`，附加一个[会话](sessions/index.md)，或者使用 `conversation_id` / `previous_response_id` 复用 OpenAI 服务端管理的状态。[运行智能体](running_agents.md)指南会比较这些方法。
+
+可按以下经验法则选择：
+
+| 如果你想要... | 从...开始 |
+| --- | --- |
+| 完全手动控制和与提供商无关的历史记录 | `result.to_input_list()` |
+| 由 SDK 为你加载和保存历史记录 | [`session=...`](sessions/index.md) |
+| 由 OpenAI 管理的服务端延续 | `previous_response_id` 或 `conversation_id` |
+
+有关权衡取舍和确切行为，请参阅[运行智能体](running_agents.md#choose-a-memory-strategy)。
+
+当任务主要存在于提示词、工具和对话状态中时，使用普通的 `Agent` 加 `Runner`。如果智能体需要在隔离的工作区中检查或修改真实文件，请转到[沙盒智能体快速入门](sandbox_agents.md)。
+
+## 智能体工具的提供
+
+你可以为智能体提供工具，用于查找信息或执行操作。
+
+```python
+import asyncio
+from agents import Agent, Runner, function_tool
+
+
+@function_tool
+def history_fun_fact() -> str:
+    """Return a short history fact."""
+    return "Sharks are older than trees."
+
+
+agent = Agent(
+    name="History Tutor",
+    instructions="Answer history questions clearly. Use history_fun_fact when it helps.",
+    tools=[history_fun_fact],
+)
+
+
+async def main():
+    result = await Runner.run(
+        agent,
+        "Tell me something surprising about ancient life on Earth.",
+    )
+    print(result.final_output)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## 更多智能体的添加
+
+在选择多智能体模式之前，请决定最终答案应由谁负责：
+
+-   **任务转移**：专家智能体会接管该轮对话中的相应部分。
+-   **Agents as tools**：编排者保持控制，并将专家智能体作为工具调用。
+
+本快速入门继续使用**任务转移**，因为这是最短的入门示例。有关管理者式模式，请参阅[智能体编排](multi_agent.md)和[工具：agents as tools](tools.md#agents-as-tools)。
+
+其他智能体也可以用同样的方式定义。`handoff_description` 会为路由智能体提供有关何时委派的额外上下文。
 
 ```python
 from agents import Agent
@@ -59,145 +159,67 @@ from agents import Agent
 history_tutor_agent = Agent(
     name="History Tutor",
     handoff_description="Specialist agent for historical questions",
-    instructions="You provide assistance with historical queries. Explain important events and context clearly.",
+    instructions="You answer history questions clearly and concisely.",
 )
 
 math_tutor_agent = Agent(
     name="Math Tutor",
     handoff_description="Specialist agent for math questions",
-    instructions="You provide help with math problems. Explain your reasoning at each step and include examples",
+    instructions="You explain math step by step and include worked examples.",
 )
 ```
 
-## 任务转移定义
+## 任务转移的定义
 
-在每个智能体上，你可以定义一个外发任务转移选项清单，供智能体选择以决定如何推进其任务。
+在智能体上，你可以定义一组可选的外部任务转移选项，供它在解决任务时选择。
 
 ```python
 triage_agent = Agent(
     name="Triage Agent",
-    instructions="You determine which agent to use based on the user's homework question",
-    handoffs=[history_tutor_agent, math_tutor_agent]
+    instructions="Route each homework question to the right specialist.",
+    handoffs=[history_tutor_agent, math_tutor_agent],
 )
 ```
 
-## 智能体编排运行
+## 智能体编排的运行
 
-让我们检查工作流是否正常运行，以及分诊智能体是否能在两个专家智能体之间正确路由。
+运行器会处理各个智能体的执行、所有任务转移以及所有工具调用。
 
 ```python
+import asyncio
 from agents import Runner
 
+
 async def main():
-    result = await Runner.run(triage_agent, "What is the capital of France?")
+    result = await Runner.run(
+        triage_agent,
+        "Who was the first president of the United States?",
+    )
     print(result.final_output)
-```
+    print(f"Answered by: {result.last_agent.name}")
 
-## 安全防护措施添加
-
-你可以定义自定义的安全防护措施，运行在输入或输出上。
-
-```python
-from agents import GuardrailFunctionOutput, Agent, Runner
-from pydantic import BaseModel
-
-
-class HomeworkOutput(BaseModel):
-    is_homework: bool
-    reasoning: str
-
-guardrail_agent = Agent(
-    name="Guardrail check",
-    instructions="Check if the user is asking about homework.",
-    output_type=HomeworkOutput,
-)
-
-async def homework_guardrail(ctx, agent, input_data):
-    result = await Runner.run(guardrail_agent, input_data, context=ctx.context)
-    final_output = result.final_output_as(HomeworkOutput)
-    return GuardrailFunctionOutput(
-        output_info=final_output,
-        tripwire_triggered=not final_output.is_homework,
-    )
-```
-
-## 整合运行
-
-让我们把以上内容整合起来，运行整个工作流，使用任务转移和输入安全防护措施。
-
-```python
-from agents import Agent, InputGuardrail, GuardrailFunctionOutput, Runner
-from agents.exceptions import InputGuardrailTripwireTriggered
-from pydantic import BaseModel
-import asyncio
-
-class HomeworkOutput(BaseModel):
-    is_homework: bool
-    reasoning: str
-
-guardrail_agent = Agent(
-    name="Guardrail check",
-    instructions="Check if the user is asking about homework.",
-    output_type=HomeworkOutput,
-)
-
-math_tutor_agent = Agent(
-    name="Math Tutor",
-    handoff_description="Specialist agent for math questions",
-    instructions="You provide help with math problems. Explain your reasoning at each step and include examples",
-)
-
-history_tutor_agent = Agent(
-    name="History Tutor",
-    handoff_description="Specialist agent for historical questions",
-    instructions="You provide assistance with historical queries. Explain important events and context clearly.",
-)
-
-
-async def homework_guardrail(ctx, agent, input_data):
-    result = await Runner.run(guardrail_agent, input_data, context=ctx.context)
-    final_output = result.final_output_as(HomeworkOutput)
-    return GuardrailFunctionOutput(
-        output_info=final_output,
-        tripwire_triggered=not final_output.is_homework,
-    )
-
-triage_agent = Agent(
-    name="Triage Agent",
-    instructions="You determine which agent to use based on the user's homework question",
-    handoffs=[history_tutor_agent, math_tutor_agent],
-    input_guardrails=[
-        InputGuardrail(guardrail_function=homework_guardrail),
-    ],
-)
-
-async def main():
-    # Example 1: History question
-    try:
-        result = await Runner.run(triage_agent, "who was the first president of the united states?")
-        print(result.final_output)
-    except InputGuardrailTripwireTriggered as e:
-        print("Guardrail blocked this input:", e)
-
-    # Example 2: General/philosophical question
-    try:
-        result = await Runner.run(triage_agent, "What is the meaning of life?")
-        print(result.final_output)
-    except InputGuardrailTripwireTriggered as e:
-        print("Guardrail blocked this input:", e)
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## 追踪查看
+## 参考代码示例
 
-要回顾智能体运行期间发生的事情，请前往 [OpenAI 控制台中的 Trace viewer](https://platform.openai.com/traces) 查看你的智能体运行追踪。
+仓库包含相同核心模式的完整脚本：
+
+-   [`examples/basic/hello_world.py`](https://github.com/openai/openai-agents-python/tree/main/examples/basic/hello_world.py) 用于首次运行。
+-   [`examples/basic/tools.py`](https://github.com/openai/openai-agents-python/tree/main/examples/basic/tools.py) 用于工具调用。
+-   [`examples/agent_patterns/routing.py`](https://github.com/openai/openai-agents-python/tree/main/examples/agent_patterns/routing.py) 用于多智能体路由。
+
+## 追踪的查看
+
+若要回顾智能体运行期间发生的情况，请前往 [OpenAI Dashboard 中的追踪查看器](https://platform.openai.com/traces)，查看智能体运行的追踪。
 
 ## 后续步骤
 
-了解如何构建更复杂的智能体流程：
+了解如何构建更复杂的智能体式流程：
 
-- 学习如何配置[智能体](agents.md)。
-- 了解[运行智能体](running_agents.md)。
-- 了解[工具](tools.md)、[安全防护措施](guardrails.md)和[模型](models/index.md)。
+-   了解如何配置[智能体](agents.md)。
+-   了解[运行智能体](running_agents.md)和[会话](sessions/index.md)。
+-   如果工作应在真实工作区内进行，请了解[沙盒智能体](sandbox_agents.md)。
+-   了解[工具](tools.md)、[安全防护措施](guardrails.md)和[模型](models/index.md)。

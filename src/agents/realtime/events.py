@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Union
-
-from typing_extensions import TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from ..guardrail import OutputGuardrailResult
 from ..run_context import RunContextWrapper
@@ -100,6 +98,28 @@ class RealtimeToolEnd:
     """Common info for all events, such as the context."""
 
     type: Literal["tool_end"] = "tool_end"
+
+
+@dataclass
+class RealtimeToolApprovalRequired:
+    """A tool call requires human approval before execution."""
+
+    agent: RealtimeAgent
+    """The agent requesting approval."""
+
+    tool: Tool
+    """The tool awaiting approval."""
+
+    call_id: str
+    """The tool call identifier."""
+
+    arguments: str
+    """The arguments passed to the tool as a JSON string."""
+
+    info: RealtimeEventInfo
+    """Common info for all events, such as the context."""
+
+    type: Literal["tool_approval_required"] = "tool_approval_required"
 
 
 @dataclass
@@ -233,20 +253,21 @@ class RealtimeInputAudioTimeoutTriggered:
     type: Literal["input_audio_timeout_triggered"] = "input_audio_timeout_triggered"
 
 
-RealtimeSessionEvent: TypeAlias = Union[
-    RealtimeAgentStartEvent,
-    RealtimeAgentEndEvent,
-    RealtimeHandoffEvent,
-    RealtimeToolStart,
-    RealtimeToolEnd,
-    RealtimeRawModelEvent,
-    RealtimeAudioEnd,
-    RealtimeAudio,
-    RealtimeAudioInterrupted,
-    RealtimeError,
-    RealtimeHistoryUpdated,
-    RealtimeHistoryAdded,
-    RealtimeGuardrailTripped,
-    RealtimeInputAudioTimeoutTriggered,
-]
+RealtimeSessionEvent: TypeAlias = (
+    RealtimeAgentStartEvent
+    | RealtimeAgentEndEvent
+    | RealtimeHandoffEvent
+    | RealtimeToolStart
+    | RealtimeToolEnd
+    | RealtimeToolApprovalRequired
+    | RealtimeRawModelEvent
+    | RealtimeAudioEnd
+    | RealtimeAudio
+    | RealtimeAudioInterrupted
+    | RealtimeError
+    | RealtimeHistoryUpdated
+    | RealtimeHistoryAdded
+    | RealtimeGuardrailTripped
+    | RealtimeInputAudioTimeoutTriggered
+)
 """An event emitted by the realtime session."""

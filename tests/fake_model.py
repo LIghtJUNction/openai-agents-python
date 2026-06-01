@@ -5,6 +5,7 @@ from typing import Any
 
 from openai.types.responses import (
     Response,
+    ResponseApplyPatchToolCall,
     ResponseCompletedEvent,
     ResponseContentPartAddedEvent,
     ResponseContentPartDoneEvent,
@@ -121,8 +122,24 @@ class FakeModel(Model):
                 )
                 raise output
 
+            converted_output = []
+            for item in output:
+                if isinstance(item, dict) and item.get("type") == "apply_patch_call":
+                    call_id = str(item.get("call_id") or item.get("id") or "")
+                    converted_output.append(
+                        ResponseApplyPatchToolCall(
+                            type="apply_patch_call",
+                            id=str(item.get("id") or call_id),
+                            call_id=call_id,
+                            status=item.get("status") or "completed",
+                            operation=item.get("operation"),
+                        )
+                    )
+                else:
+                    converted_output.append(item)
+
             return ModelResponse(
-                output=output,
+                output=converted_output,
                 usage=self.hardcoded_usage or Usage(),
                 response_id="resp-789",
             )
@@ -259,7 +276,7 @@ class FakeModel(Model):
                     sequence_number += 1
 
                 elif isinstance(output_item, ResponseOutputMessage):
-                    for content_index, content_part in enumerate(output_item.content):
+                    for content_index, content_part in enumerate(output_item.content or []):
                         if isinstance(content_part, ResponseOutputText):
                             yield ResponseContentPartAddedEvent(
                                 type="response.content_part.added",
@@ -316,6 +333,11 @@ class FakeModel(Model):
                 response=response,
                 sequence_number=sequence_number,
             )
+
+
+class PromptCacheFakeModel(FakeModel):
+    def _supports_default_prompt_cache_key(self) -> bool:
+        return True
 
 
 def get_response_obj(

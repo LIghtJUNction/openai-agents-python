@@ -182,7 +182,7 @@ async def _create_test_session(
     session = DaprSession(
         session_id=session_id,
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     )
 
     # Clean up any existing data
@@ -260,12 +260,12 @@ async def test_session_isolation(fake_dapr_client: FakeDaprClient):
     session1 = DaprSession(
         session_id="session_1",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     )
     session2 = DaprSession(
         session_id="session_2",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     )
 
     try:
@@ -386,12 +386,47 @@ async def test_pop_from_empty_session(fake_dapr_client: FakeDaprClient):
     session = DaprSession(
         session_id="empty_session",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     )
     try:
         await session.clear_session()
         popped = await session.pop_item()
         assert popped is None
+    finally:
+        await session.close()
+
+
+async def test_pop_item_skips_corrupt_most_recent(fake_dapr_client: FakeDaprClient):
+    """pop_item skips corrupt newest entries and returns the next valid item."""
+    session = await _create_test_session(fake_dapr_client, "pop_corrupt")
+
+    try:
+        valid_item: TResponseInputItem = {"role": "user", "content": "valid"}
+        fake_dapr_client._state[session._messages_key] = json.dumps(
+            [await session._serialize_item(valid_item), "not valid json {{{"],
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        assert await session.pop_item() == valid_item
+        assert await session.get_items() == []
+    finally:
+        await session.close()
+
+
+async def test_pop_item_returns_none_after_dropping_only_corrupt_entries(
+    fake_dapr_client: FakeDaprClient,
+):
+    """pop_item removes corrupt entries and returns None when no valid items remain."""
+    session = await _create_test_session(fake_dapr_client, "pop_only_corrupt")
+
+    try:
+        fake_dapr_client._state[session._messages_key] = json.dumps(
+            ["not valid json {{{"],
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        assert await session.pop_item() is None
+        assert await session.get_items() == []
     finally:
         await session.close()
 
@@ -540,7 +575,7 @@ async def test_dapr_connectivity(fake_dapr_client: FakeDaprClient):
     session = DaprSession(
         session_id="connectivity_test",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     )
     try:
         # Test ping
@@ -555,7 +590,7 @@ async def test_ttl_functionality(fake_dapr_client: FakeDaprClient):
     session = DaprSession(
         session_id="ttl_test",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
         ttl=3600,  # 1 hour TTL
     )
 
@@ -586,7 +621,7 @@ async def test_consistency_levels(fake_dapr_client: FakeDaprClient):
     session_eventual = DaprSession(
         session_id="eventual_test",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
         consistency=DAPR_CONSISTENCY_EVENTUAL,
     )
 
@@ -594,7 +629,7 @@ async def test_consistency_levels(fake_dapr_client: FakeDaprClient):
     session_strong = DaprSession(
         session_id="strong_test",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
         consistency=DAPR_CONSISTENCY_STRONG,
     )
 
@@ -621,7 +656,7 @@ async def test_external_client_not_closed(fake_dapr_client: FakeDaprClient):
     session = DaprSession(
         session_id="external_client_test",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     )
 
     try:
@@ -650,7 +685,7 @@ async def test_internal_client_ownership(fake_dapr_client: FakeDaprClient):
     session = DaprSession(
         session_id="internal_client_test",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     )
     session._owns_client = True  # Simulate ownership
 
@@ -669,32 +704,40 @@ async def test_internal_client_ownership(fake_dapr_client: FakeDaprClient):
         assert fake_dapr_client._closed is True
 
 
-async def test_corrupted_data_handling(fake_dapr_client: FakeDaprClient):
-    """Test that corrupted JSON data is handled gracefully."""
+@pytest.mark.parametrize(
+    "raw_state",
+    [
+        b"invalid json data",
+        b"\xff",
+        json.dumps({"some": "object"}).encode("utf-8"),
+    ],
+)
+async def test_add_items_rejects_corrupted_aggregate_state(
+    fake_dapr_client: FakeDaprClient,
+    raw_state: bytes,
+):
+    """Test that corrupted aggregate state is not overwritten by add_items."""
     session = await _create_test_session(fake_dapr_client, "corruption_test")
 
     try:
         await session.clear_session()
 
-        # Add some valid data first
+        # Add some valid data first.
         await session.add_items([{"role": "user", "content": "valid message"}])
 
-        # Inject corrupted data directly into state store
+        # Inject corrupted data directly into state store.
         messages_key = "corruption_test:messages"
-        fake_dapr_client._state[messages_key] = b"invalid json data"
+        fake_dapr_client._state[messages_key] = raw_state
 
-        # get_items should handle corrupted data gracefully
+        # get_items should handle corrupted data gracefully.
         items = await session.get_items()
         assert len(items) == 0  # Corrupted data returns empty list
 
-        # Should be able to add new valid items after corruption
+        # add_items should not overwrite the corrupted aggregate state.
         valid_item: TResponseInputItem = {"role": "user", "content": "valid after corruption"}
-        await session.add_items([valid_item])
-
-        # Should now have valid items
-        items = await session.get_items()
-        assert len(items) == 1
-        assert items[0].get("content") == "valid after corruption"
+        with pytest.raises(ValueError, match="stored Dapr session messages"):
+            await session.add_items([valid_item])
+        assert fake_dapr_client._state[messages_key] == raw_state
 
     finally:
         await session.close()
@@ -732,7 +775,7 @@ async def test_close_method_coverage(fake_dapr_client: FakeDaprClient):
     session1 = DaprSession(
         session_id="close_test_1",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     )
 
     # Verify _owns_client is False for external client
@@ -749,7 +792,7 @@ async def test_close_method_coverage(fake_dapr_client: FakeDaprClient):
     session2 = DaprSession(
         session_id="close_test_2",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client2,
+        dapr_client=fake_dapr_client2,  # type: ignore[arg-type]
     )
     session2._owns_client = True  # Simulate ownership
 
@@ -788,8 +831,8 @@ async def test_already_deserialized_messages(fake_dapr_client: FakeDaprClient):
     # Should handle both string and dict messages
     items = await session.get_items()
     assert len(items) == 2
-    assert items[0]["content"] == "First message"
-    assert items[1]["content"] == "Second message"
+    assert items[0]["content"] == "First message"  # type: ignore[typeddict-item]
+    assert items[1]["content"] == "Second message"  # type: ignore[typeddict-item]
 
     await session.close()
 
@@ -800,7 +843,7 @@ async def test_context_manager(fake_dapr_client: FakeDaprClient):
     async with DaprSession(
         "test_cm_session",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     ) as session:
         # Verify we got the session object back
         assert session.session_id == "test_cm_session"
@@ -809,7 +852,7 @@ async def test_context_manager(fake_dapr_client: FakeDaprClient):
         await session.add_items([{"role": "user", "content": "Test message"}])
         items = await session.get_items()
         assert len(items) == 1
-        assert items[0]["content"] == "Test message"
+        assert items[0]["content"] == "Test message"  # type: ignore[typeddict-item]
 
     # After exiting context manager, close should have been called
     # Verify we can still check the state (fake client doesn't truly disconnect)
@@ -819,7 +862,7 @@ async def test_context_manager(fake_dapr_client: FakeDaprClient):
     owned_session = DaprSession(
         "test_cm_owned",
         state_store_name="statestore",
-        dapr_client=fake_dapr_client,
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
     )
     # Manually set ownership to simulate from_address behavior
     owned_session._owns_client = True
@@ -830,3 +873,165 @@ async def test_context_manager(fake_dapr_client: FakeDaprClient):
         assert len(items) == 1
 
     # Close should have been called automatically (though fake client doesn't track this)
+
+
+# ============================================================================
+# SessionSettings Tests
+# ============================================================================
+
+
+async def test_session_settings_default(fake_dapr_client: FakeDaprClient):
+    """Test that session_settings defaults to empty SessionSettings."""
+    from agents.memory import SessionSettings
+
+    session = await _create_test_session(fake_dapr_client)
+
+    try:
+        # Should have default SessionSettings
+        assert isinstance(session.session_settings, SessionSettings)
+        assert session.session_settings.limit is None
+    finally:
+        await session.close()
+
+
+async def test_session_settings_constructor(fake_dapr_client: FakeDaprClient):
+    """Test passing session_settings via constructor."""
+    from agents.memory import SessionSettings
+
+    session = DaprSession(
+        session_id="settings_test",
+        state_store_name="statestore",
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
+        session_settings=SessionSettings(limit=5),
+    )
+
+    try:
+        assert session.session_settings is not None
+        assert session.session_settings.limit == 5
+    finally:
+        await session.close()
+
+
+async def test_get_items_uses_session_settings_limit(fake_dapr_client: FakeDaprClient):
+    """Test that get_items uses session_settings.limit as default."""
+    from agents.memory import SessionSettings
+
+    session = DaprSession(
+        session_id="uses_settings_limit_test",
+        state_store_name="statestore",
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
+        session_settings=SessionSettings(limit=3),
+    )
+
+    try:
+        await session.clear_session()
+
+        # Add 5 items
+        items: list[TResponseInputItem] = [
+            {"role": "user", "content": f"Message {i}"} for i in range(5)
+        ]
+        await session.add_items(items)
+
+        # get_items() with no limit should use session_settings.limit=3
+        retrieved = await session.get_items()
+        assert len(retrieved) == 3
+        # Should get the last 3 items
+        assert retrieved[0].get("content") == "Message 2"
+        assert retrieved[1].get("content") == "Message 3"
+        assert retrieved[2].get("content") == "Message 4"
+    finally:
+        await session.close()
+
+
+async def test_get_items_explicit_limit_overrides_session_settings(
+    fake_dapr_client: FakeDaprClient,
+):
+    """Test that explicit limit parameter overrides session_settings."""
+    from agents.memory import SessionSettings
+
+    session = DaprSession(
+        session_id="explicit_override_test",
+        state_store_name="statestore",
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
+        session_settings=SessionSettings(limit=5),
+    )
+
+    try:
+        await session.clear_session()
+
+        # Add 10 items
+        items: list[TResponseInputItem] = [
+            {"role": "user", "content": f"Message {i}"} for i in range(10)
+        ]
+        await session.add_items(items)
+
+        # Explicit limit=2 should override session_settings.limit=5
+        retrieved = await session.get_items(limit=2)
+        assert len(retrieved) == 2
+        assert retrieved[0].get("content") == "Message 8"
+        assert retrieved[1].get("content") == "Message 9"
+    finally:
+        await session.close()
+
+
+async def test_session_settings_resolve():
+    """Test SessionSettings.resolve() method."""
+    from agents.memory import SessionSettings
+
+    base = SessionSettings(limit=100)
+    override = SessionSettings(limit=50)
+
+    final = base.resolve(override)
+
+    assert final.limit == 50  # Override wins
+    assert base.limit == 100  # Original unchanged
+
+    # Resolving with None returns self
+    final_none = base.resolve(None)
+    assert final_none.limit == 100
+
+
+async def test_runner_with_session_settings_override(fake_dapr_client: FakeDaprClient):
+    """Test that RunConfig can override session's default settings."""
+    from agents import Agent, RunConfig, Runner
+    from agents.memory import SessionSettings
+    from tests.fake_model import FakeModel
+    from tests.test_responses import get_text_message
+
+    session = DaprSession(
+        session_id="runner_override_test",
+        state_store_name="statestore",
+        dapr_client=fake_dapr_client,  # type: ignore[arg-type]
+        session_settings=SessionSettings(limit=100),
+    )
+
+    try:
+        await session.clear_session()
+
+        # Add some history
+        items: list[TResponseInputItem] = [
+            {"role": "user", "content": f"Turn {i}"} for i in range(10)
+        ]
+        await session.add_items(items)
+
+        model = FakeModel()
+        agent = Agent(name="test", model=model)
+        model.set_next_output([get_text_message("Got it")])
+
+        await Runner.run(
+            agent,
+            "New question",
+            session=session,
+            run_config=RunConfig(
+                session_settings=SessionSettings(limit=2)  # Override to 2
+            ),
+        )
+
+        # Verify the agent received only the last 2 history items + new question
+        last_input = model.last_turn_args["input"]
+        # Filter out the new "New question" input
+        history_items = [item for item in last_input if item.get("content") != "New question"]
+        # Should have 2 history items (last two from the 10 we added)
+        assert len(history_items) == 2
+    finally:
+        await session.close()

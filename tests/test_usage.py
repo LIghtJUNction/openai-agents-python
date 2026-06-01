@@ -1,6 +1,47 @@
+from __future__ import annotations
+
+import pytest
+from openai.types.completion_usage import CompletionTokensDetails, PromptTokensDetails
 from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
 
+from agents import Agent, Runner
 from agents.usage import RequestUsage, Usage
+from tests.fake_model import FakeModel
+from tests.test_responses import get_text_message
+
+
+@pytest.mark.asyncio
+async def test_runner_run_carries_request_usage_entries() -> None:
+    """Ensure usage produced by the model propagates to RunResult context."""
+    usage = Usage(
+        requests=1,
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+        request_usage_entries=[
+            RequestUsage(
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+                input_tokens_details=InputTokensDetails(cached_tokens=0),
+                output_tokens_details=OutputTokensDetails(reasoning_tokens=0),
+            )
+        ],
+    )
+    model = FakeModel(initial_output=[get_text_message("done")])
+    model.set_hardcoded_usage(usage)
+    agent = Agent(name="usage-agent", model=model)
+
+    result = await Runner.run(agent, input="hi")
+
+    propagated = result.context_wrapper.usage
+    assert propagated.requests == 1
+    assert propagated.total_tokens == 15
+    assert len(propagated.request_usage_entries) == 1
+    entry = propagated.request_usage_entries[0]
+    assert entry.input_tokens == 10
+    assert entry.output_tokens == 5
+    assert entry.total_tokens == 15
 
 
 def test_usage_add_aggregates_all_fields():
@@ -205,6 +246,39 @@ def test_usage_add_with_pre_existing_request_usage_entries():
     assert u1.request_usage_entries[1].input_tokens == 50
 
 
+def test_usage_add_preserves_existing_entries_when_top_level_also_set():
+    """When `other` has both top-level single-request fields AND pre-populated
+    `request_usage_entries`, the existing entries (which carry the authoritative
+    nested token details) must not be discarded in favor of a synthesized entry
+    built from only the top-level fields.
+    """
+    u1 = Usage()
+    u2 = Usage(
+        requests=1,
+        input_tokens=100,
+        output_tokens=50,
+        total_tokens=150,
+        request_usage_entries=[
+            RequestUsage(
+                input_tokens=100,
+                output_tokens=50,
+                total_tokens=150,
+                input_tokens_details=InputTokensDetails(cached_tokens=10),
+                output_tokens_details=OutputTokensDetails(reasoning_tokens=5),
+            )
+        ],
+    )
+
+    u1.add(u2)
+
+    # The pre-populated entry must be preserved — including its nested details —
+    # rather than being replaced by a synthesized entry with zeroed-out details.
+    assert len(u1.request_usage_entries) == 1
+    entry = u1.request_usage_entries[0]
+    assert entry.input_tokens_details.cached_tokens == 10
+    assert entry.output_tokens_details.reasoning_tokens == 5
+
+
 def test_usage_request_usage_entries_default_empty():
     """Test that request_usage_entries defaults to an empty list."""
     u = Usage()
@@ -270,7 +344,24 @@ def test_anthropic_cost_calculation_scenario():
 
 
 def test_usage_normalizes_none_token_details():
-    # Some providers don't populate optional fields, resulting in None values
+    # Some providers don't populate optional token detail fields
+    # (cached_tokens, reasoning_tokens), and the OpenAI SDK's generated
+    # code can bypass Pydantic validation (e.g., via model_construct),
+    # allowing None values. We normalize these to 0 to prevent TypeErrors.
+
+    # Test entire objects being None (BeforeValidator)
+    usage = Usage(
+        requests=1,
+        input_tokens=100,
+        input_tokens_details=None,  # type: ignore[arg-type]
+        output_tokens=50,
+        output_tokens_details=None,  # type: ignore[arg-type]
+        total_tokens=150,
+    )
+    assert usage.input_tokens_details.cached_tokens == 0
+    assert usage.output_tokens_details.reasoning_tokens == 0
+
+    # Test fields within objects being None (__post_init__)
     input_details = InputTokensDetails(cached_tokens=0)
     input_details.__dict__["cached_tokens"] = None
 
@@ -289,3 +380,33 @@ def test_usage_normalizes_none_token_details():
     # __post_init__ should normalize None to 0
     assert usage.input_tokens_details.cached_tokens == 0
     assert usage.output_tokens_details.reasoning_tokens == 0
+
+
+def test_usage_normalizes_chat_completions_types():
+    # Chat Completions API uses PromptTokensDetails and CompletionTokensDetails,
+    # while Usage expects InputTokensDetails and OutputTokensDetails (Responses API).
+    # The BeforeValidator should convert between these types.
+
+    prompt_details = PromptTokensDetails(audio_tokens=10, cached_tokens=50)
+    completion_details = CompletionTokensDetails(
+        accepted_prediction_tokens=5,
+        audio_tokens=10,
+        reasoning_tokens=100,
+        rejected_prediction_tokens=2,
+    )
+
+    usage = Usage(
+        requests=1,
+        input_tokens=200,
+        input_tokens_details=prompt_details,  # type: ignore[arg-type]
+        output_tokens=150,
+        output_tokens_details=completion_details,  # type: ignore[arg-type]
+        total_tokens=350,
+    )
+
+    # Should convert to Responses API types, extracting the relevant fields
+    assert isinstance(usage.input_tokens_details, InputTokensDetails)
+    assert usage.input_tokens_details.cached_tokens == 50
+
+    assert isinstance(usage.output_tokens_details, OutputTokensDetails)
+    assert usage.output_tokens_details.reasoning_tokens == 100
